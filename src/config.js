@@ -137,15 +137,15 @@ export const RELIC_EMPOWER_MAX = 3;
 export const relicEmpowerCost = (level) => 150 * (level + 1);
 export const RELIC_EMPOWER_MULT = 1.8;
 
-// Creep families.
+// Creep families. `model` names a compiled model in src/three/data, `height` its size in cells.
 export const CREEPS = {
-  normal: { name: 'Crawler', color: 0xc0a080, hp: 1, speed: 1.7, count: 14, size: 0.32, armor: 0 },
-  fast: { name: 'Skitter', color: 0x6ad0ff, hp: 0.75, speed: 2.8, count: 14, size: 0.26, armor: 0 },
-  armored: { name: 'Bulwark', color: 0x8a8f99, hp: 1.3, speed: 1.4, count: 12, size: 0.38, armor: 6 },
-  swarm: { name: 'Mite', color: 0xe0c040, hp: 0.4, speed: 2.0, count: 26, size: 0.2, armor: 0 },
-  regen: { name: 'Mender', color: 0x60e090, hp: 1.1, speed: 1.6, count: 14, size: 0.32, armor: 1, regen: 0.03 },
-  flying: { name: 'Wisp', color: 0xd090ff, hp: 0.8, speed: 1.7, count: 14, size: 0.3, armor: 0, flying: true },
-  boss: { name: 'Colossus', color: 0xff5050, hp: 18, speed: 1.2, count: 1, size: 0.7, armor: 4, lives: 5 },
+  normal: { name: 'Ghoul', color: 0xc0a080, hp: 1, speed: 1.7, count: 14, armor: 0, model: 'zombie', height: 0.95 },
+  fast: { name: 'Dire Wolf', color: 0x6ad0ff, hp: 0.75, speed: 2.8, count: 14, armor: 0, model: 'wolf', height: 0.7 },
+  armored: { name: 'Brute', color: 0x8a8f99, hp: 1.3, speed: 1.4, count: 12, armor: 6, model: 'orc_brute', height: 1.35 },
+  swarm: { name: 'Scuttler', color: 0xe0c040, hp: 0.4, speed: 2.0, count: 26, armor: 0, model: 'crab', height: 0.45 },
+  regen: { name: 'Ooze', color: 0x60e090, hp: 1.1, speed: 1.6, count: 14, armor: 1, regen: 0.03, model: 'slime_green', height: 0.65 },
+  flying: { name: 'Nightwing', color: 0xd090ff, hp: 0.8, speed: 1.7, count: 14, armor: 0, flying: true, model: 'bat', height: 0.8 },
+  boss: { name: 'Warlord', color: 0xff5050, hp: 18, speed: 1.2, count: 1, armor: 4, lives: 5, models: ['yeti', 'wyvern', 'demon'], names: ['Frost Yeti', 'Night Wyvern', 'Pit Demon'], height: 2.2 },
 };
 
 const WAVE_PATTERN = ['normal', 'fast', 'armored', 'swarm', 'flying', 'normal', 'regen', 'fast', 'armored', 'boss'];
@@ -157,9 +157,12 @@ export function waveInfo(wave) {
   const type = WAVE_PATTERN[(wave - 1) % WAVE_PATTERN.length];
   const def = CREEPS[type];
   const baseHp = HP_BASE * Math.pow(HP_GROWTH, wave - 1) + 6 * wave;
+  const bossIdx = Math.max(0, Math.min(2, Math.floor(wave / 10) - 1));
   return {
     type,
     def,
+    name: type === 'boss' ? def.names[bossIdx] : def.name,
+    model: type === 'boss' ? def.models[bossIdx] : def.model,
     count: def.count + (type === 'boss' ? Math.floor(wave / 10) - 1 : Math.floor(wave / 6)),
     hp: Math.round(baseHp * def.hp),
     armor: Math.floor(wave / 4) + def.armor + (type === 'armored' ? Math.floor(wave / 3) : 0),

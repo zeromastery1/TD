@@ -1,5 +1,5 @@
 import {
-  GEMS_PER_ROUND, TOTAL_WAVES, TIERS, SHARDS, RELICS, PROSPECT_TABLE, prospectCost, waveInfo, RELIC_EMPOWER_MAX,
+  GEMS_PER_ROUND, TOTAL_WAVES, START_LIVES, TIERS, SHARDS, RELICS, PROSPECT_TABLE, prospectCost, waveInfo, RELIC_EMPOWER_MAX,
 } from './config.js';
 
 const $ = (id) => document.getElementById(id);
@@ -27,19 +27,31 @@ export class UI {
 
   refresh() {
     const g = this.g;
-    $('h-wave').textContent = `${g.wave}/${TOTAL_WAVES}`;
-    $('h-lives').textContent = g.lives;
+    $('h-wave').textContent = `Wave ${g.wave} / ${TOTAL_WAVES}`;
+    $('h-lives').textContent = `${g.lives} / ${START_LIVES}`;
+    $('h-lifefill').style.width = `${(100 * g.lives) / START_LIVES}%`;
+    $('h-trackfill').style.width = `${(100 * (g.wave - 1)) / (TOTAL_WAVES - 1)}%`;
+    if (!this.marksBuilt) {
+      this.marksBuilt = true;
+      let html = '';
+      for (let w = 5; w <= TOTAL_WAVES; w += 5) {
+        const boss = w % 10 === 0;
+        html += `<span data-w="${w}" class="${boss ? 'boss' : ''}" style="left:${(100 * (w - 1)) / (TOTAL_WAVES - 1)}%">${boss ? '☠' : '◆'}</span>`;
+      }
+      $('h-marks').innerHTML = html;
+    }
+    document.querySelectorAll('#h-marks span').forEach((m) => m.classList.toggle('past', +m.dataset.w < g.wave));
     $('h-gold').textContent = g.gold;
     $('h-kills').textContent = g.kills;
     const maxed = g.prospect >= PROSPECT_TABLE.length - 1;
     const pb = $('b-prospect');
-    pb.textContent = maxed ? `Prospect Lv ${g.prospect} (max)` : `Prospect Lv ${g.prospect} → ${g.prospect + 1} (${prospectCost(g.prospect)}g)`;
+    pb.textContent = maxed ? `Prospecting ${g.prospect} (max)` : `Prospecting ${g.prospect} → ${g.prospect + 1} · ${prospectCost(g.prospect)}g`;
     pb.disabled = maxed || g.gold < prospectCost(g.prospect);
     pb.title = 'Shard quality odds: ' + PROSPECT_TABLE[g.prospect].map((p, i) => p ? `${TIERS[i]} ${p}%` : '').filter(Boolean).join(', ');
 
     const info = waveInfo(g.wave);
     $('next').innerHTML = g.phase === 'won' || g.phase === 'over' ? '' :
-      `${g.phase === 'wave' ? 'Current' : 'Next'}: <b>${info.count} × ${info.def.name}</b>` +
+      `${g.phase === 'wave' ? 'Current' : 'Next'}: <b>${info.count} × ${info.name}</b>` +
       ` · ${info.hp} HP · armor ${info.armor}${info.def.flying ? ' · <b>flying</b> (ignores maze)' : ''}${info.type === 'boss' ? ' · <b>boss</b>' : ''}`;
 
     let ph = '';
@@ -47,7 +59,7 @@ export class UI {
       const left = GEMS_PER_ROUND - g.candidates.length;
       ph = `Place shards on the field: <b>${left}</b> left. They block the path, so build a maze!`;
     } else if (g.phase === 'choose') {
-      ph = 'Select one of the new shards (marked ◇) and <b>Keep</b>, <b>Combine</b> or <b>Forge</b> it.';
+      ph = 'Select one of the new shards (ringed in gold) and <b>Keep</b>, <b>Combine</b> or <b>Forge</b> it.';
     } else if (g.phase === 'wave') {
       ph = `Wave ${g.wave} in progress… creeps left: <b>${g.creeps.length + (g.spawn ? g.spawn.left : 0)}</b>`;
     } else if (g.phase === 'over') {
@@ -127,7 +139,7 @@ export class UI {
     for (const a of acts) {
       const b = document.createElement('button');
       b.innerHTML = `${a.key ? `<span class="kbd">${a.key}</span>` : ''}${a.label}<small>${a.hint}</small>`;
-      if (a.relic) b.classList.add('relic');
+      if (a.relic || a.id === 'keep') b.classList.add('relic');
       else if (a.accent) b.classList.add('accent');
       b.disabled = !!a.disabled;
       b.onclick = () => g.doAction(a.id);
@@ -135,7 +147,8 @@ export class UI {
     }
   }
 
-  openModal(html) {
+  openModal(html, cls = '') {
+    $('modal').className = cls;
     $('m-body').innerHTML = html;
     $('modal').classList.remove('hidden');
   }
@@ -169,9 +182,22 @@ export class UI {
       <p>${TIERS.join(' → ')}. Combine 2 identical new shards for +1 quality, or 4 for +2.</p>`);
   }
 
+  showTitle() {
+    this.openModal(`
+      <div class="logo">PRISMFALL</div>
+      <div class="sublogo">GEM DEFENSE</div>
+      <p class="title-blurb">The dead march on the vale tonight. Raise a maze of living crystal in their path,
+      keep the finest shards as towers, fuse them into greater gems, and hold for ${TOTAL_WAVES} waves.</p>
+      <button class="primary title-start" id="b-start">Begin</button>
+      <div class="title-keys">Left click: place / select · Right or middle drag, WASD: pan · Wheel: zoom · K keep · C combine · 1 2 3 speed</div>
+      <p style="margin-top:14px"><button class="small" id="b-howto">How to play</button></p>`, 'title');
+    $('b-start').onclick = () => this.closeModal();
+    $('b-howto').onclick = () => this.showHelp(true);
+  }
+
   showHelp(first = false) {
     this.openModal(`
-      <h2>${first ? 'Welcome to Prismfall' : 'How to play'}</h2>
+      <h2>How to play</h2>
       <p>Creeps march from the green <b>Gate</b> through waypoints <b>1 → 5</b> to the red <b>Exit</b>. Stop them before your 20 lives run out, and survive ${TOTAL_WAVES} waves.</p>
       <ol>
         <li><b>Place ${GEMS_PER_ROUND} shards</b> each round by clicking empty cells. Shards are random: 8 families and several qualities. Every placed shard blocks the ground path, so use them to build a long maze (you can never fully seal it).</li>
@@ -180,9 +206,9 @@ export class UI {
         <li><b>Forge relics:</b> special recipes turn sets of shards into powerful unique towers. See the Recipe book.</li>
         <li>Spend gold on <b>Prospecting</b> (better shard quality), <b>Empowering</b> relics, or clearing stones.</li>
       </ol>
-      <p><b>Wisps fly</b> straight between waypoints and ignore your maze. Every 10th wave is a boss.</p>
+      <p><b>Nightwings fly</b> straight between waypoints and ignore your maze. Every 10th wave is a boss.</p>
       <h3>Controls</h3>
-      <p>Left click: place / select · Right drag: rotate · Middle drag or WASD: pan · Wheel: zoom<br>
+      <p>Left click: place / select · Right or middle drag, WASD: pan · Wheel: zoom<br>
       K: keep · C / V: combine · 1, 2, 3: game speed · Esc: deselect</p>`);
   }
 

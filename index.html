@@ -4,18 +4,27 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Prismfall</title>
-    <link rel="stylesheet" href="./src/style.css" />
   </head>
   <body>
     <div id="app"></div>
+    <div id="loading">Gathering shards…</div>
 
-    <header id="hud">
-      <div class="brand">PRISMFALL</div>
-      <div class="stat"><span class="lbl">Wave</span><span id="h-wave">1</span></div>
-      <div class="stat"><span class="lbl">Lives</span><span id="h-lives">20</span></div>
-      <div class="stat"><span class="lbl">Gold</span><span id="h-gold">0</span></div>
-      <div class="stat"><span class="lbl">Kills</span><span id="h-kills">0</span></div>
-      <button id="b-prospect" title="Raise the chance of drawing higher quality shards">Prospect Lv 0</button>
+    <div id="hud-left" class="hud">
+      <div class="lifebar"><div id="h-lifefill"></div><span id="h-lives">20 / 20</span></div>
+      <div class="counters">
+        <span class="coin"></span><span id="h-gold">0</span>
+        <span class="skull">☠</span><span id="h-kills">0</span>
+      </div>
+      <button id="b-prospect" class="small" title="Raise the chance of drawing higher quality shards">Prospect</button>
+    </div>
+
+    <div id="hud-top" class="hud">
+      <div id="h-wave">Wave 1</div>
+      <div class="track"><div id="h-trackfill"></div><div id="h-marks"></div></div>
+      <div id="next"></div>
+    </div>
+
+    <div id="hud-right" class="hud">
       <div class="speed">
         <button data-speed="1" class="on">1×</button>
         <button data-speed="2">2×</button>
@@ -23,9 +32,8 @@
       </div>
       <button id="b-recipes">Recipes</button>
       <button id="b-help">?</button>
-    </header>
+    </div>
 
-    <div id="next"></div>
     <div id="phase"></div>
     <div id="toast"></div>
 
