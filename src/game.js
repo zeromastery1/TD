@@ -5,19 +5,23 @@ import {
   RELIC_EMPOWER_MAX, relicEmpowerCost, RELIC_EMPOWER_MULT, waveInfo, waveClearBonus, armorFactor,
 } from './config.js';
 import { computeRoute, isRouteCell } from './path.js';
-import { cellToWorld } from './scene.js';
+
+// Game state and rules. Positions are in cell units with the board's centre at 0,0;
+// the renderer (view.js) reads this state every frame and turns `events` into effects.
+
+const HALF = (GRID - 1) / 2;
+export const cellPos = (x, z) => new THREE.Vector3(x - HALF, 0, z - HALF);
 
 let nextId = 1;
 
 export class Game {
-  constructor(scene3d, onChange) {
-    this.s = scene3d;
+  constructor(onChange) {
     this.onChange = onChange; // UI refresh callback
     this.cells = new Array(GRID * GRID).fill(null);
     this.towers = [];
     this.creeps = [];
     this.projectiles = [];
-    this.effects = [];
+    this.events = [];
     this.candidates = [];
     this.lives = START_LIVES;
     this.gold = 0;
@@ -30,12 +34,14 @@ export class Game {
     this.spawn = null;
     this.kills = 0;
     this.time = 0;
+    this.eclipses = [];
     this.updateRoute();
   }
 
   // ---------- Grid helpers ----------
   at(x, z) { return this.cells[z * GRID + x]; }
   set(x, z, t) { this.cells[z * GRID + x] = t; }
+  emit(type, data) { this.events.push({ type, ...data }); }
 
   canPlace(x, z) {
     if (this.phase !== 'build') return { ok: false, why: 'Not the building phase.' };
@@ -48,12 +54,12 @@ export class Game {
 
   updateRoute() {
     this.route = computeRoute((x, z) => !!this.at(x, z));
-    this.routeWorld = this.route.map((c) => cellToWorld(c.x, c.z));
+    this.routeWorld = this.route.map((c) => cellPos(c.x, c.z));
     this.routeLen = this.routeWorld.length - 1;
-    this.flyWorld = ROUTE.map((r) => cellToWorld(r.x, r.z));
+    this.flyWorld = ROUTE.map((r) => cellPos(r.x, r.z));
     this.flyLen = 0;
     for (let i = 1; i < this.flyWorld.length; i++) this.flyLen += this.flyWorld[i].distanceTo(this.flyWorld[i - 1]);
-    this.s.setRoute(this.route);
+    this.routeVersion = (this.routeVersion || 0) + 1;
   }
 
   // ---------- Building ----------
@@ -73,10 +79,9 @@ export class Game {
     const type = SHARD_KEYS[(Math.random() * SHARD_KEYS.length) | 0];
     const t = this.addTower('shard', type, this.rollTier(), x, z);
     t.candidate = true;
-    t.marker = this.s.makeCandidateMarker();
-    t.mesh.add(t.marker);
     this.candidates.push(t);
     this.updateRoute();
+    this.emit('place', { t });
     if (this.candidates.length >= GEMS_PER_ROUND) {
       this.phase = 'choose';
       this.flash('Choose one shard to keep. The rest turn to stone.');
@@ -86,50 +91,30 @@ export class Game {
   }
 
   addTower(kind, type, tier, x, z) {
-    const t = { id: nextId++, kind, type, tier, x, z, cd: 0, empower: 0, kills: 0, dealt: 0, candidate: false };
-    t.pos = cellToWorld(x, z);
-    t.mesh = this.makeMesh(t);
-    t.mesh.position.copy(t.pos);
-    this.s.scene.add(t.mesh);
+    const t = {
+      id: nextId++, kind, type, tier, x, z, cd: 0, empower: 0, kills: 0, dealt: 0,
+      candidate: false, born: this.time, pulse: 0, seed: Math.random(),
+    };
+    t.pos = cellPos(x, z);
     this.towers.push(t);
     this.set(x, z, t);
     this.recalcAuras();
     return t;
   }
 
-  makeMesh(t) {
-    if (t.kind === 'stone') return this.s.makeStoneMesh();
-    if (t.kind === 'relic') return this.s.makeRelicMesh(t.type, t.empower);
-    return this.s.makeShardMesh(t.type, t.tier);
-  }
-
-  rebuildMesh(t) {
-    const wasSelected = this.selected === t;
-    this.s.scene.remove(t.mesh);
-    disposeTree(t.mesh);
-    t.mesh = this.makeMesh(t);
-    t.mesh.position.copy(t.pos);
-    if (t.candidate && t.marker) {
-      t.marker = this.s.makeCandidateMarker();
-      t.mesh.add(t.marker);
-    }
-    this.s.scene.add(t.mesh);
-    if (wasSelected) this.select(t);
-  }
-
   toStone(t) {
     t.kind = 'stone';
     t.type = null;
     t.tier = 0;
-    this.rebuildMesh(t);
+    t.born = this.time;
+    this.emit('stone', { t });
   }
 
   removeTower(t) {
-    this.s.scene.remove(t.mesh);
-    disposeTree(t.mesh);
     this.set(t.x, t.z, null);
     this.towers.splice(this.towers.indexOf(t), 1);
     if (this.selected === t) this.select(null);
+    this.emit('clear', { t });
     this.recalcAuras();
   }
 
@@ -137,7 +122,6 @@ export class Game {
   finishRound(keep) {
     for (const c of this.candidates) {
       c.candidate = false;
-      if (c.marker) { c.mesh.remove(c.marker); c.marker = null; }
       if (c !== keep && c.kind === 'shard') this.toStone(c);
     }
     this.candidates = [];
@@ -160,8 +144,7 @@ export class Game {
     }
     if (t.kind === 'shard' && (this.phase !== 'build' || !t.candidate)) {
       for (const key of Object.keys(RELICS)) {
-        const plan = this.recipePlan(key, t);
-        if (plan) acts.push({ id: 'relic:' + key, label: `Forge ${RELICS[key].name}`, hint: RELICS[key].blurb, accent: true, relic: true });
+        if (this.recipePlan(key, t)) acts.push({ id: 'relic:' + key, label: `Forge ${RELICS[key].name}`, hint: RELICS[key].blurb, accent: true, relic: true });
       }
     }
     if (t.kind === 'relic' && t.empower < RELIC_EMPOWER_MAX) {
@@ -178,13 +161,14 @@ export class Game {
     const t = this.selected;
     if (!t) return;
     if (id === 'keep' && this.phase === 'choose' && t.candidate) {
+      this.emit('keep', { t });
       this.finishRound(t);
     } else if ((id === 'combine1' || id === 'combine2') && this.phase === 'choose' && t.candidate) {
       const steps = id === 'combine1' ? 1 : 2;
       if (this.sameCandidates(t).length < steps * 2 || t.tier + steps > MAX_TIER) return;
       t.tier += steps;
-      this.rebuildMesh(t);
-      this.effectBurst(t.pos, SHARDS[t.type].color, 1.4);
+      t.born = this.time;
+      this.emit('combine', { t });
       this.flash(`Fused into a ${TIERS[t.tier]} ${SHARDS[t.type].name} shard!`);
       this.finishRound(t);
     } else if (id.startsWith('relic:')) {
@@ -194,8 +178,7 @@ export class Game {
       if (this.gold < cost || t.empower >= RELIC_EMPOWER_MAX) return;
       this.gold -= cost;
       t.empower++;
-      this.rebuildMesh(t);
-      this.effectBurst(t.pos, RELICS[t.type].color, 1.6);
+      this.emit('empower', { t });
     } else if (id === 'clear' && t.kind === 'stone') {
       if (this.gold < CLEAR_STONE_COST) return;
       this.gold -= CLEAR_STONE_COST;
@@ -227,13 +210,13 @@ export class Game {
     const plan = this.recipePlan(key, t);
     if (!plan) return;
     const usedCandidate = plan.some((o) => o.candidate);
-    for (const o of plan) if (o !== t) this.toStone(o);
+    for (const o of plan) if (o !== t) { this.emit('feed', { from: o, to: t }); this.toStone(o); }
     t.kind = 'relic';
     t.type = key;
     t.tier = 0;
     t.empower = 0;
-    this.rebuildMesh(t);
-    this.effectBurst(t.pos, RELICS[key].color, 2.5);
+    t.born = this.time;
+    this.emit('forge', { t });
     this.flash(`${RELICS[key].name} forged!`);
     if (usedCandidate || t.candidate) this.finishRound(t);
     else this.recalcAuras();
@@ -251,18 +234,13 @@ export class Game {
 
   select(t) {
     this.selected = t;
-    const s = this.s;
-    if (!t) {
-      s.selectRing.visible = false;
-      s.showRange(0, 0, null);
-    } else {
-      s.selectRing.visible = true;
-      s.selectRing.position.set(t.pos.x, 0.035, t.pos.z);
-      const st = this.stats(t);
-      const color = t.kind === 'relic' ? RELICS[t.type].color : t.kind === 'shard' ? SHARDS[t.type].color : 0;
-      s.showRange(t.x, t.z, st ? st.range : null, color);
-    }
     this.onChange();
+  }
+
+  colorOf(t) {
+    if (t.kind === 'relic') return RELICS[t.type].color;
+    if (t.kind === 'shard') return SHARDS[t.type].color;
+    return 0xaaaaaa;
   }
 
   // ---------- Stats ----------
@@ -290,6 +268,8 @@ export class Game {
         aura: d.aura ? d.aura + d.auraPerTier * tier : 0,
         auraRange: d.auraRange || 0,
         color: d.color,
+        family: t.type,
+        power: 1 + tier * 0.25,
       };
     }
     if (t.kind === 'relic') {
@@ -310,6 +290,8 @@ export class Game {
         crit: d.crit || 0, critMult: d.critMult || 1,
         shredAura: d.shredAura || 0,
         color: d.color,
+        family: t.type,
+        power: 2.2 + t.empower * 0.4,
         splashPoison: t.type === 'plague',
       };
     }
@@ -335,22 +317,21 @@ export class Game {
     const info = waveInfo(this.wave);
     this.phase = 'wave';
     this.spawn = { info, left: info.count, timer: 0 };
-    this.flash(`Wave ${this.wave}: ${info.count} × ${info.def.name}${info.def.flying ? ' (flying)' : ''}`);
+    this.flash(`Wave ${this.wave}: ${info.count} × ${info.name}${info.def.flying ? ' (flying)' : ''}`);
+    this.emit('wave', { info });
     this.onChange();
   }
 
   spawnCreep(info) {
     const def = info.def;
-    const mesh = this.s.makeCreepMesh(info.type, def.color, def.size);
     const c = {
-      type: info.type, def, hp: info.hp, maxHp: info.hp, armor: info.armor, speed: info.speed,
-      bounty: info.bounty, flying: !!def.flying, lives: def.lives || 1,
-      seg: 0, traveled: 0, mesh, dots: new Map(), slowUntil: 0, slowAmt: 0, shredUntil: 0, shredAmt: 0, alive: true,
+      id: nextId++, type: info.type, def, hp: info.hp, maxHp: info.hp, armor: info.armor, speed: info.speed,
+      bounty: info.bounty, flying: !!def.flying, lives: def.lives || 1, boss: info.type === 'boss',
+      model: info.model, name: info.name, wave: this.wave,
+      seg: 0, traveled: 0, dots: new Map(), slowUntil: 0, slowAmt: 0, shredUntil: 0, shredAmt: 0, alive: true,
+      hitFlash: 0, heading: Math.PI / 2, progress: 0, born: this.time,
     };
     c.pos = (c.flying ? this.flyWorld[0] : this.routeWorld[0]).clone();
-    c.pos.y = c.flying ? 1.3 : 0;
-    mesh.position.copy(c.pos);
-    this.s.scene.add(mesh);
     this.creeps.push(c);
   }
 
@@ -371,9 +352,9 @@ export class Game {
   // ---------- Simulation ----------
   update(rawDt) {
     const dt = Math.min(rawDt, 0.05) * (this.phase === 'over' || this.phase === 'won' ? 0 : this.speed);
-    this.time += dt;
-    this.animate(rawDt);
+    this.dt = dt;
     if (dt === 0) return;
+    this.time += dt;
 
     if (this.phase === 'wave' && this.spawn) {
       const sp = this.spawn;
@@ -409,7 +390,7 @@ export class Game {
     const now = this.time;
     for (const c of this.creeps) {
       if (!c.alive) continue;
-      // Damage over time
+      c.hitFlash = Math.max(0, c.hitFlash - dt * 6);
       for (const [k, d] of c.dots) {
         if (now > d.until) { c.dots.delete(k); continue; }
         this.damage(c, d.dps * dt, d.src, true);
@@ -420,11 +401,14 @@ export class Game {
 
       const slow = now < c.slowUntil ? c.slowAmt : 0;
       let move = c.speed * (1 - slow) * dt;
+      c.pace = c.speed * (1 - slow);
       const pts = c.flying ? this.flyWorld : this.routeWorld;
       while (move > 0 && c.seg < pts.length - 1) {
         const target = pts[c.seg + 1];
         const dx = target.x - c.pos.x, dz = target.z - c.pos.z;
         const dist = Math.hypot(dx, dz);
+        if (dist < 1e-6) { c.seg++; continue; }
+        c.heading = Math.atan2(dx, dz);
         if (dist <= move) {
           c.pos.x = target.x; c.pos.z = target.z;
           move -= dist; c.traveled += dist;
@@ -432,14 +416,15 @@ export class Game {
         } else {
           c.pos.x += (dx / dist) * move; c.pos.z += (dz / dist) * move;
           c.traveled += move;
-          c.heading = Math.atan2(dx, dz);
           move = 0;
         }
       }
       if (c.seg >= pts.length - 1) {
         c.alive = false;
+        c.leaked = true;
         this.lives -= c.lives;
-        this.flash(`A ${c.def.name} slipped through! -${c.lives} ${c.lives > 1 ? 'lives' : 'life'}`);
+        this.emit('leak', { c });
+        this.flash(`A ${c.name} slipped through! -${c.lives} ${c.lives > 1 ? 'lives' : 'life'}`);
         if (this.lives <= 0) {
           this.lives = 0;
           this.phase = 'over';
@@ -448,28 +433,21 @@ export class Game {
       }
       c.progress = c.traveled / (c.flying ? this.flyLen : this.routeLen);
     }
-    // Remove dead creeps
-    for (let i = this.creeps.length - 1; i >= 0; i--) {
-      const c = this.creeps[i];
-      if (!c.alive) {
-        this.s.scene.remove(c.mesh);
-        disposeTree(c.mesh);
-        this.creeps.splice(i, 1);
-      }
-    }
+    this.creeps = this.creeps.filter((c) => c.alive);
   }
 
   damage(c, amount, src, ignoreArmor = false) {
     if (!c.alive) return;
     const dmg = ignoreArmor ? amount : amount * armorFactor(this.creepArmor(c));
     c.hp -= dmg;
+    if (!ignoreArmor) c.hitFlash = 1;
     if (src) src.dealt += dmg;
     if (c.hp <= 0) {
       c.alive = false;
       this.gold += c.bounty;
       this.kills++;
       if (src) src.kills++;
-      this.effectParticles(c.pos, c.def.color, c.type === 'boss' ? 24 : 8);
+      this.emit('death', { c });
       this.onChange();
     }
   }
@@ -477,17 +455,17 @@ export class Game {
   updateTowers(dt) {
     for (const t of this.towers) {
       if (t.kind === 'stone') continue;
+      t.pulse = Math.max(0, t.pulse - dt * 4);
       t.cd -= dt * (1 + (t.haste || 0));
       if (t.cd > 0) continue;
       const st = this.stats(t);
       const targets = this.findTargets(t.pos, st.range, st.multi);
       if (!targets.length) { t.cd = 0; continue; }
       t.cd = st.cooldown;
-      if (st.chains) {
-        this.chainLightning(t, st, targets[0]);
-      } else {
-        for (const target of targets) this.fire(t, st, target);
-      }
+      t.pulse = 1;
+      t.aim = Math.atan2(targets[0].pos.x - t.pos.x, targets[0].pos.z - t.pos.z);
+      if (st.chains) this.chainLightning(t, st, targets[0]);
+      else for (const target of targets) this.fire(t, st, target);
     }
   }
 
@@ -503,45 +481,44 @@ export class Game {
   }
 
   fire(t, st, target) {
-    const mesh = this.s.makeProjectile(st.color);
-    const start = t.pos.clone();
-    start.y = t.kind === 'relic' ? 0.95 : 0.6;
-    mesh.position.copy(start);
-    this.s.scene.add(mesh);
-    this.projectiles.push({ mesh, target, src: t, st, speed: 14, last: target.pos.clone() });
+    const pos = t.pos.clone();
+    pos.y = t.kind === 'relic' ? 1.5 : 1.0;
+    this.projectiles.push({ pos, prev: pos.clone(), target, src: t, st, speed: 11, last: target.pos.clone(), age: 0 });
+    this.emit('fire', { t, st });
   }
 
   updateProjectiles(dt) {
     for (let i = this.projectiles.length - 1; i >= 0; i--) {
       const p = this.projectiles[i];
-      if (p.target.alive) p.last.copy(p.target.pos).setY(p.target.pos.y + (p.target.flying ? 0 : 0.35));
-      const to = p.last.clone().sub(p.mesh.position);
+      p.age += dt;
+      if (p.target.alive) p.last.set(p.target.pos.x, p.target.flying ? 1.0 : 0.5, p.target.pos.z);
+      p.prev.copy(p.pos);
+      const to = p.last.clone().sub(p.pos);
       const d = to.length();
       const step = p.speed * dt;
       if (d <= step) {
-        this.hit(p.src, p.st, p.target.alive ? p.target : null, p.last);
-        this.s.scene.remove(p.mesh);
-        p.mesh.material.dispose();
+        this.hit(p.src, p.st, p.target.alive ? p.target : null, p.last.clone());
         this.projectiles.splice(i, 1);
       } else {
-        p.mesh.position.addScaledVector(to, step / d);
+        p.pos.addScaledVector(to, step / d);
       }
     }
   }
 
   hit(t, st, target, point) {
     const now = this.time;
+    let crit = false;
     if (target) {
       let dmg = st.damage;
-      if (st.crit && Math.random() < st.crit) dmg *= st.critMult;
+      if (st.crit && Math.random() < st.crit) { dmg *= st.critMult; crit = true; }
       this.applyEffects(t, st, target, now);
       this.damage(target, dmg, t);
     }
+    this.emit('hit', { t, st, point, target, crit });
     if (st.splash) {
-      this.effectBurst(point, st.color, st.splash);
       for (const c of this.creeps) {
         if (!c.alive || c === target) continue;
-        if (c.pos.distanceTo(point) <= st.splash) {
+        if (Math.hypot(c.pos.x - point.x, c.pos.z - point.z) <= st.splash) {
           if (st.splashPoison) this.applyEffects(t, st, c, now);
           this.damage(c, st.damage * st.splashFrac, t);
         }
@@ -554,8 +531,8 @@ export class Game {
       c.slowAmt = st.slow;
       c.slowUntil = now + st.slowTime;
     }
-    if (st.poison) c.dots.set(t.id + ':p', { dps: st.poison, until: now + st.poisonTime, src: t });
-    if (st.burn) c.dots.set(t.id + ':b', { dps: st.burn, until: now + st.burnTime, src: t });
+    if (st.poison) c.dots.set(t.id + ':p', { dps: st.poison, until: now + st.poisonTime, src: t, kind: 'poison' });
+    if (st.burn) c.dots.set(t.id + ':b', { dps: st.burn, until: now + st.burnTime, src: t, kind: 'burn' });
     if (st.shred && (now > c.shredUntil || st.shred >= c.shredAmt)) {
       c.shredAmt = st.shred;
       c.shredUntil = now + st.shredTime;
@@ -564,15 +541,15 @@ export class Game {
 
   chainLightning(t, st, first) {
     const hitSet = new Set();
-    const start = t.pos.clone();
-    start.y = t.kind === 'relic' ? 0.95 : 0.6;
-    const pts = [start];
+    const pts = [{ x: t.pos.x, z: t.pos.z, h: t.kind === 'relic' ? 1.5 : 1.0 }];
     let cur = first;
     let dmg = st.damage;
     for (let i = 0; i <= st.chains && cur; i++) {
       hitSet.add(cur);
-      pts.push(cur.pos.clone().setY(cur.pos.y + 0.35));
-      this.hit(t, { ...st, damage: dmg, chains: 0 }, cur, cur.pos.clone());
+      pts.push({ x: cur.pos.x, z: cur.pos.z, h: cur.flying ? 1.0 : 0.5 });
+      const point = cur.pos.clone();
+      point.y = cur.flying ? 1.0 : 0.5;
+      this.hit(t, { ...st, damage: dmg, chains: 0, chained: true }, cur, point);
       dmg *= 0.85;
       let best = null, bestD = 2.8;
       for (const c of this.creeps) {
@@ -582,85 +559,7 @@ export class Game {
       }
       cur = best;
     }
-    const line = this.s.makeLightning(pts, st.color);
-    this.s.scene.add(line);
-    this.effects.push({ mesh: line, life: 0.18, max: 0.18, kind: 'fade' });
-  }
-
-  // ---------- Visual effects ----------
-  effectBurst(pos, color, radius) {
-    const m = this.s.makeBurst(color, radius);
-    m.position.set(pos.x, 0.1, pos.z);
-    this.s.scene.add(m);
-    this.effects.push({ mesh: m, life: 0.35, max: 0.35, kind: 'burst', radius });
-  }
-
-  effectParticles(pos, color, n) {
-    for (let i = 0; i < n; i++) {
-      const m = this.s.makeParticle(color);
-      m.position.copy(pos).setY(pos.y + 0.4);
-      this.s.scene.add(m);
-      const v = new THREE.Vector3((Math.random() - 0.5) * 4, 2 + Math.random() * 3, (Math.random() - 0.5) * 4);
-      this.effects.push({ mesh: m, life: 0.7, max: 0.7, kind: 'particle', v });
-    }
-  }
-
-  animate(dt) {
-    const t = performance.now() / 1000;
-    for (const tw of this.towers) {
-      const u = tw.mesh.userData;
-      if (u.gem) {
-        u.gem.rotation.y += dt * u.spin;
-        u.gem.position.y = u.baseY + Math.sin(t * 2 + u.phase) * 0.05;
-        u.pips.rotation.y -= dt * 1.5;
-        u.pips.position.y = u.gem.position.y;
-      }
-      if (tw.marker) {
-        const s = 1 + Math.sin(t * 5) * 0.08;
-        tw.marker.scale.set(s, s, 1);
-      }
-    }
-    for (const c of this.creeps) {
-      c.mesh.position.copy(c.pos);
-      const u = c.mesh.userData;
-      if (c.flying) u.inner.position.y = Math.sin(t * 3 + c.traveled) * 0.15;
-      else u.inner.position.y = Math.abs(Math.sin(c.traveled * 4)) * 0.06;
-      if (c.heading !== undefined) u.inner.rotation.y = c.heading - Math.PI / 2;
-      if (c.type === 'boss' || c.type === 'regen') u.body.rotation.y += dt;
-      const frac = Math.max(0, c.hp / c.maxHp);
-      u.barFg.scale.x = frac;
-      u.barFg.position.x = -(1 - frac) / 2;
-      u.barFg.material.color.setHSL(frac * 0.33, 0.9, 0.5);
-      u.bar.quaternion.copy(this.s.camera.quaternion);
-      const slowed = this.time < c.slowUntil;
-      u.mat.emissive.setHex(slowed ? 0x3080ff : c.dots.size ? 0x40ff40 : c.def.color);
-      u.mat.emissiveIntensity = slowed || c.dots.size ? 0.6 : c.flying ? 0.9 : 0.15;
-    }
-    for (const wp of this.s.waypointMeshes) wp.userData.ring.rotation.z += dt * 0.8;
-    this.s.routeMesh.material.opacity = this.phase === 'wave' ? 0.18 : 0.4 + Math.sin(t * 3) * 0.15;
-    for (let i = this.effects.length - 1; i >= 0; i--) {
-      const e = this.effects[i];
-      e.life -= dt;
-      const k = Math.max(0, e.life / e.max);
-      if (e.kind === 'burst') {
-        const r = e.radius * (1 - k * 0.7);
-        e.mesh.scale.set(r, r, 1);
-        e.mesh.material.opacity = k * 0.8;
-      } else if (e.kind === 'particle') {
-        e.v.y -= 9 * dt;
-        e.mesh.position.addScaledVector(e.v, dt);
-        e.mesh.rotation.x += dt * 8;
-        e.mesh.material.opacity = k;
-      } else {
-        e.mesh.material.opacity = k;
-      }
-      if (e.life <= 0) {
-        this.s.scene.remove(e.mesh);
-        e.mesh.geometry !== this.s.geo.burst && e.mesh.geometry !== this.s.geo.particle && e.mesh.geometry.dispose();
-        e.mesh.material.dispose();
-        this.effects.splice(i, 1);
-      }
-    }
+    this.emit('chain', { t, st, pts });
   }
 
   flash(msg) {
@@ -668,11 +567,4 @@ export class Game {
     this.messageTime = performance.now();
     this.onChange();
   }
-}
-
-function disposeTree(obj) {
-  obj.traverse((o) => {
-    // Geometries are shared (scene.geo); per-instance materials are disposed.
-    if (o.material && !o.material.userData.shared) o.material.dispose();
-  });
 }
