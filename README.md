@@ -9,6 +9,10 @@ recipes, and survive 30 waves.
 
 ## Play
 
+Play online: https://zeromastery1.github.io/TD/ (deployed by GitHub Actions on every push to `main`).
+
+Or run it locally:
+
 ```bash
 npm install
 npm run dev
