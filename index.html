@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Prismfall</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app"></div>
+
+    <header id="hud">
+      <div class="brand">PRISMFALL</div>
+      <div class="stat"><span class="lbl">Wave</span><span id="h-wave">1</span></div>
+      <div class="stat"><span class="lbl">Lives</span><span id="h-lives">20</span></div>
+      <div class="stat"><span class="lbl">Gold</span><span id="h-gold">0</span></div>
+      <div class="stat"><span class="lbl">Kills</span><span id="h-kills">0</span></div>
+      <button id="b-prospect" title="Raise the chance of drawing higher quality shards">Prospect Lv 0</button>
+      <div class="speed">
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="2">2×</button>
+        <button data-speed="4">4×</button>
+      </div>
+      <button id="b-recipes">Recipes</button>
+      <button id="b-help">?</button>
+    </header>
+
+    <div id="next"></div>
+    <div id="phase"></div>
+    <div id="toast"></div>
+
+    <aside id="panel" class="hidden">
+      <div id="p-title"></div>
+      <div id="p-sub"></div>
+      <div id="p-stats"></div>
+      <div id="p-actions"></div>
+    </aside>
+
+    <div id="modal" class="hidden">
+      <div class="card">
+        <div id="m-body"></div>
+        <div class="m-foot"><button id="m-close">Close</button></div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
